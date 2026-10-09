@@ -13,6 +13,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
 
+enum class TrackFinishResult {
+    SAVED,
+    EMPTY,
+    NOT_FOUND,
+}
+
 class TrackRepository(
     private val database: FootprintDatabase,
     private val context: Context,
@@ -142,23 +148,32 @@ class TrackRepository(
         }
     }
 
-    suspend fun finishTrack(trackId: String, now: Long = System.currentTimeMillis()) {
-        database.withTransaction {
-            val track = dao.getTrack(trackId) ?: return@withTransaction
-            if (track.status == TrackStatus.COMPLETED) return@withTransaction
-            val elapsed = if (track.status == TrackStatus.RECORDING) {
-                track.activeSince?.let { ((now - it).coerceAtLeast(0) / 1000) } ?: 0
-            } else 0
-            dao.updateState(
-                trackId,
-                TrackStatus.COMPLETED,
-                track.durationSeconds + elapsed,
-                null,
-                now,
-                now,
-            )
+    suspend fun finishTrack(trackId: String, now: Long = System.currentTimeMillis()): TrackFinishResult =
+        withContext(Dispatchers.IO) {
+            val attachmentFiles = dao.getAttachments(trackId).mapNotNull { resolveAttachmentPath(it.relativePath) }
+            val result = database.withTransaction {
+                val track = dao.getTrack(trackId) ?: return@withTransaction TrackFinishResult.NOT_FOUND
+                if (dao.getLastPoint(trackId) == null) {
+                    dao.deleteTrack(trackId)
+                    return@withTransaction TrackFinishResult.EMPTY
+                }
+                if (track.status == TrackStatus.COMPLETED) return@withTransaction TrackFinishResult.SAVED
+                val elapsed = if (track.status == TrackStatus.RECORDING) {
+                    track.activeSince?.let { ((now - it).coerceAtLeast(0) / 1000) } ?: 0
+                } else 0
+                dao.updateState(
+                    trackId,
+                    TrackStatus.COMPLETED,
+                    track.durationSeconds + elapsed,
+                    null,
+                    now,
+                    now,
+                )
+                TrackFinishResult.SAVED
+            }
+            if (result == TrackFinishResult.EMPTY) attachmentFiles.forEach { it.delete() }
+            result
         }
-    }
 
     suspend fun markInterrupted(trackId: String, now: Long = System.currentTimeMillis()) {
         database.withTransaction {
@@ -204,6 +219,9 @@ class TrackRepository(
         speedMetersPerSecond: Float?,
         altitudeMeters: Double?,
     ) {
+        if (!latitude.isFinite() || latitude !in -90.0..90.0) return
+        if (!longitude.isFinite() || longitude !in -180.0..180.0) return
+        if (!accuracyMeters.isFinite() || accuracyMeters < 0f) return
         database.withTransaction {
             val track = dao.getTrack(trackId) ?: return@withTransaction
             if (track.status != TrackStatus.RECORDING) return@withTransaction

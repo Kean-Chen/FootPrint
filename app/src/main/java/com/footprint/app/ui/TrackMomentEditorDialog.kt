@@ -10,6 +10,7 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -90,6 +91,7 @@ internal fun TrackMomentEditorDialog(
     var note by remember(trackId) { mutableStateOf("") }
     var saving by remember(trackId) { mutableStateOf(false) }
     var errorMessage by remember(trackId) { mutableStateOf<String?>(null) }
+    var fullScreenImage by remember(trackId) { mutableStateOf<PendingMomentImage?>(null) }
 
     DisposableEffect(tempDirectory) {
         onDispose { tempDirectory.deleteRecursively() }
@@ -204,6 +206,7 @@ internal fun TrackMomentEditorDialog(
                                         .fillMaxSize()
                                         .clip(RoundedCornerShape(14.dp))
                                         .background(Color.White, RoundedCornerShape(14.dp)),
+                                    onClick = { fullScreenImage = image },
                                 )
                                 Surface(
                                     modifier = Modifier.align(Alignment.TopEnd).padding(4.dp),
@@ -254,6 +257,13 @@ internal fun TrackMomentEditorDialog(
             }
         }
     }
+
+    fullScreenImage?.let { image ->
+        MomentImageViewerDialog(
+            uri = image.uri,
+            onDismiss = { fullScreenImage = null },
+        )
+    }
 }
 
 @Composable
@@ -261,36 +271,79 @@ internal fun MomentImage(
     modifier: Modifier = Modifier,
     uri: Uri? = null,
     file: File? = null,
+    onClick: (() -> Unit)? = null,
+    fullSize: Boolean = false,
+    contentScale: ContentScale = ContentScale.Crop,
 ) {
     val context = LocalContext.current
-    val bitmap by produceState<Bitmap?>(null, uri, file) {
+    val bitmap by produceState<Bitmap?>(null, uri, file, fullSize) {
         value = withContext(Dispatchers.IO) {
             runCatching {
-                decodeThumbnail(context, file, uri)
+                decodeThumbnail(context, file, uri, if (fullSize) 2048 else 640)
             }.getOrNull()
         }
     }
+    val imageModifier = if (onClick == null) modifier else modifier.clickable(onClick = onClick)
     if (bitmap != null) {
         Image(
             bitmap = bitmap!!.asImageBitmap(),
             contentDescription = "图文记录图片",
-            modifier = modifier,
-            contentScale = ContentScale.Crop,
+            modifier = imageModifier,
+            contentScale = contentScale,
         )
     } else {
-        Box(modifier.background(Color(0xFFE8EAE6), RoundedCornerShape(12.dp)), contentAlignment = Alignment.Center) {
+        Box(imageModifier.background(Color(0xFFE8EAE6), RoundedCornerShape(12.dp)), contentAlignment = Alignment.Center) {
             Text("图片", color = MomentMuted, style = MaterialTheme.typography.labelSmall)
         }
     }
 }
 
-private fun decodeThumbnail(context: android.content.Context, file: File?, uri: Uri?): Bitmap? {
+@Composable
+internal fun MomentImageViewerDialog(
+    uri: Uri? = null,
+    file: File? = null,
+    onDismiss: () -> Unit,
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black),
+        ) {
+            MomentImage(
+                uri = uri,
+                file = file,
+                fullSize = true,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp),
+            )
+            TextButton(
+                onClick = onDismiss,
+                modifier = Modifier.align(Alignment.TopEnd).padding(12.dp),
+            ) {
+                Text("关闭", color = Color.White)
+            }
+        }
+    }
+}
+
+private fun decodeThumbnail(
+    context: android.content.Context,
+    file: File?,
+    uri: Uri?,
+    maxDimension: Int,
+): Bitmap? {
     fun openStream() = if (file != null) file.inputStream() else uri?.let { context.contentResolver.openInputStream(it) }
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     openStream()?.use { BitmapFactory.decodeStream(it, null, bounds) }
     if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
     val options = BitmapFactory.Options().apply {
-        inSampleSize = (maxOf(bounds.outWidth, bounds.outHeight) / 640).coerceAtLeast(1)
+        inSampleSize = (maxOf(bounds.outWidth, bounds.outHeight) / maxDimension).coerceAtLeast(1)
     }
     val decoded = openStream()?.use { BitmapFactory.decodeStream(it, null, options) } ?: return null
     val orientation = runCatching { openStream()?.use { ExifInterface(it).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL) } }

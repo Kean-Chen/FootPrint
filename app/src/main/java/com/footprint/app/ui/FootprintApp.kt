@@ -1,6 +1,7 @@
 package com.footprint.app.ui
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -8,6 +9,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
@@ -15,8 +17,12 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Button
@@ -151,6 +157,9 @@ internal fun TrackDetailScreen(
     var track by remember(trackId) { mutableStateOf<TrackEntity?>(null) }
     var title by remember(trackId) { mutableStateOf("") }
     var note by remember(trackId) { mutableStateOf("") }
+    var editingDescription by remember(trackId) { mutableStateOf(false) }
+    var selectedMomentSequence by remember(trackId) { mutableStateOf<Long?>(null) }
+    var fullScreenImageFile by remember(trackId) { mutableStateOf<java.io.File?>(null) }
     val points by repository.observePoints(trackId).collectAsState(initial = emptyList())
     val moments by repository.observeMoments(trackId).collectAsState(initial = emptyList())
     val pointsBySequence = remember(points) { points.associateBy { it.sequence } }
@@ -175,7 +184,7 @@ internal fun TrackDetailScreen(
         Row(
             Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .padding(horizontal = 12.dp, vertical = 3.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             TextButton(onClick = onBack) { Text("‹ 返回", color = Green) }
@@ -184,91 +193,246 @@ internal fun TrackDetailScreen(
         if (track == null) {
             Text("正在读取…", modifier = Modifier.padding(20.dp), color = Muted)
         } else {
-            LazyColumn(
-                modifier = Modifier.weight(1f),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 20.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                item {
+            Column(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                val selectedMoments = selectedMomentSequence?.let { sequence ->
+                    moments.filter { it.moment.pointSequence == sequence }
+                }.orEmpty()
+                val selectedPointRecordedAt = selectedMomentSequence
+                    ?.let(pointsBySequence::get)
+                    ?.recordedAt
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(0.78f)
+                        .padding(horizontal = 12.dp),
+                ) {
                     AMapTrackMap(
                         points = points,
                         momentPoints = momentPoints,
                         hasApiKey = BuildConfig.AMAP_API_KEY != "YOUR_AMAP_API_KEY",
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(280.dp)
-                            .padding(horizontal = 16.dp),
+                        markerScale = 0.78f,
+                        onMomentPointClick = { selectedMomentSequence = it },
+                        modifier = Modifier.fillMaxSize(),
                     )
+                    if (selectedMoments.isNotEmpty()) {
+                        SelectedMomentPreview(
+                            moments = selectedMoments,
+                            pointRecordedAt = selectedPointRecordedAt,
+                            attachmentFile = repository::attachmentFile,
+                            onImageClick = { fullScreenImageFile = it },
+                            onDismiss = { selectedMomentSequence = null },
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(10.dp),
+                        )
+                    }
                 }
-                item {
-                    Column(Modifier.padding(horizontal = 20.dp)) {
-                        Text(formatDate(track!!.startedAt), color = Muted, style = MaterialTheme.typography.bodySmall)
-                        Spacer(Modifier.height(6.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
-                            Metric("距离", formatDistance(track!!.distanceMeters))
-                            Metric("时长", formatDuration(track!!.durationSeconds))
-                            Metric("轨迹点", "${points.size}")
+
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth().weight(0.22f),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(top = 4.dp, bottom = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    item {
+                        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+                            if (!editingDescription) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            title.ifBlank { "未命名足迹" },
+                                            fontWeight = FontWeight.SemiBold,
+                                            style = MaterialTheme.typography.titleMedium,
+                                        )
+                                        if (note.isNotBlank()) {
+                                            Text(
+                                                note,
+                                                color = Muted,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                maxLines = 2,
+                                            )
+                                        }
+                                    }
+                                    TextButton(onClick = { editingDescription = true }) {
+                                        Text("编辑", color = Green)
+                                    }
+                                }
+                            }
+                            Text(formatDate(track!!.startedAt), color = Muted, style = MaterialTheme.typography.labelSmall)
+                            Spacer(Modifier.height(6.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Metric("距离", formatDistance(track!!.distanceMeters))
+                                Metric("时长", formatDuration(track!!.durationSeconds))
+                                Metric("轨迹点", "${points.size}")
+                            }
+
+                            if (editingDescription) {
+                                Spacer(Modifier.height(8.dp))
+                                OutlinedTextField(
+                                    value = title,
+                                    onValueChange = { title = it },
+                                    label = { Text("名称") },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                OutlinedTextField(
+                                    value = note,
+                                    onValueChange = { note = it },
+                                    label = { Text("备注") },
+                                    minLines = 2,
+                                    modifier = Modifier.fillMaxWidth(),
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Button(
+                                        onClick = {
+                                            scope.launch {
+                                                val savedTitle = title.trim()
+                                                val savedNote = note.trim()
+                                                repository.updateDescription(trackId, savedTitle, savedNote)
+                                                track = track?.copy(title = savedTitle, note = savedNote)
+                                                title = savedTitle
+                                                note = savedNote
+                                                editingDescription = false
+                                            }
+                                        },
+                                        modifier = Modifier.weight(1f),
+                                        colors = ButtonDefaults.buttonColors(containerColor = Green),
+                                    ) { Text("保存") }
+                                    OutlinedButton(
+                                        onClick = {
+                                            title = track!!.title
+                                            note = track!!.note
+                                            editingDescription = false
+                                        },
+                                        modifier = Modifier.weight(1f),
+                                    ) { Text("取消") }
+                                }
+                                TextButton(
+                                    onClick = { onDelete(track!!) },
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Text("删除足迹", color = Color(0xFFB33C32))
+                                }
+                            }
+                        }
+                    }
+                    item {
+                        Text(
+                            "图文记录（${moments.size}）",
+                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp),
+                            fontWeight = FontWeight.SemiBold,
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                    }
+                    if (moments.isEmpty()) {
+                        item {
+                            Text(
+                                "记录过程中添加的照片和文字会显示在这里。",
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
+                                color = Muted,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    } else {
+                        items(moments, key = { it.moment.id }) { moment ->
+                            TrackMomentCard(
+                                moment = moment,
+                                pointRecordedAt = moment.moment.pointSequence
+                                    ?.let(pointsBySequence::get)
+                                    ?.recordedAt,
+                                attachmentFile = repository::attachmentFile,
+                                onImageClick = { fullScreenImageFile = it },
+                                onDelete = { scope.launch { repository.deleteMoment(moment.moment.id) } },
+                            )
                         }
                     }
                 }
-                item {
-                    Column(Modifier.padding(horizontal = 20.dp)) {
-                        OutlinedTextField(
-                            value = title,
-                            onValueChange = { title = it },
-                            label = { Text("名称") },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        OutlinedTextField(
-                            value = note,
-                            onValueChange = { note = it },
-                            label = { Text("备注") },
-                            minLines = 2,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        Spacer(Modifier.height(10.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Button(
-                                onClick = {
-                                    scope.launch { repository.updateDescription(trackId, title, note) }
-                                },
-                                modifier = Modifier.weight(1f),
-                                colors = ButtonDefaults.buttonColors(containerColor = Green),
-                            ) { Text("保存") }
-                            OutlinedButton(onClick = { onDelete(track!!) }, modifier = Modifier.weight(1f)) {
-                                Text("删除足迹")
+            }
+        }
+        fullScreenImageFile?.let { file ->
+            MomentImageViewerDialog(
+                file = file,
+                onDismiss = { fullScreenImageFile = null },
+            )
+        }
+    }
+}
+
+@Composable
+private fun SelectedMomentPreview(
+    moments: List<TrackMomentWithAttachments>,
+    pointRecordedAt: Long?,
+    attachmentFile: (String) -> java.io.File?,
+    onImageClick: (java.io.File) -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (moments.isEmpty()) return
+    val displayTimestamp = pointRecordedAt ?: moments.first().moment.createdAt
+
+    Card(
+        modifier = modifier.fillMaxWidth().heightIn(max = 200.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White.copy(alpha = 0.96f)),
+        shape = RoundedCornerShape(18.dp),
+    ) {
+        Box {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 200.dp)
+                    .verticalScroll(rememberScrollState())
+                    .padding(start = 12.dp, top = 10.dp, end = 36.dp, bottom = 28.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                moments.forEach { item ->
+                    if (item.moment.text.isNotBlank()) {
+                        Text(item.moment.text, color = Ink, style = MaterialTheme.typography.bodySmall)
+                    }
+                    if (item.attachments.isNotEmpty()) {
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(item.attachments.sortedBy { it.createdAt }, key = { it.id }) { attachment ->
+                                val imageFile = attachmentFile(attachment.relativePath)
+                                MomentImage(
+                                    file = imageFile,
+                                    modifier = Modifier
+                                        .size(76.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(Color(0xFFE8EAE6), RoundedCornerShape(10.dp)),
+                                    onClick = { imageFile?.let(onImageClick) },
+                                )
                             }
                         }
                     }
                 }
-                item {
-                    Text(
-                        "图文记录（${moments.size}）",
-                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp),
-                        fontWeight = FontWeight.SemiBold,
-                        style = MaterialTheme.typography.titleMedium,
-                    )
-                }
-                if (moments.isEmpty()) {
-                    item {
-                        Text(
-                            "记录过程中添加的照片和文字会显示在这里。",
-                            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
-                            color = Muted,
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
-                } else {
-                    items(moments, key = { it.moment.id }) { moment ->
-                        TrackMomentCard(
-                            moment = moment,
-                            attachmentFile = repository::attachmentFile,
-                            onDelete = { scope.launch { repository.deleteMoment(moment.moment.id) } },
-                        )
-                    }
-                }
+            }
+            Row(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 12.dp, bottom = 8.dp),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                Text(
+                    formatDate(displayTimestamp),
+                    color = Muted.copy(alpha = 0.75f),
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(6.dp)
+                    .size(24.dp)
+                    .clip(CircleShape)
+                    .background(Color.White.copy(alpha = 0.8f))
+                    .clickable(onClick = onDismiss),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("×", color = Muted, style = MaterialTheme.typography.titleSmall)
             }
         }
     }
@@ -277,7 +441,9 @@ internal fun TrackDetailScreen(
 @Composable
 private fun TrackMomentCard(
     moment: TrackMomentWithAttachments,
+    pointRecordedAt: Long?,
     attachmentFile: (String) -> java.io.File?,
+    onImageClick: (java.io.File) -> Unit,
     onDelete: () -> Unit,
 ) {
     var confirmDelete by remember(moment.moment.id) { mutableStateOf(false) }
@@ -288,10 +454,12 @@ private fun TrackMomentCard(
     ) {
         Column(Modifier.padding(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(formatDate(moment.moment.createdAt), color = Muted, style = MaterialTheme.typography.labelSmall, modifier = Modifier.weight(1f))
-                moment.moment.pointSequence?.let { sequence ->
-                    Text("轨迹点 #${sequence + 1}", color = Green, style = MaterialTheme.typography.labelSmall)
-                }
+                Text(
+                    formatDate(pointRecordedAt ?: moment.moment.createdAt),
+                    color = Muted,
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.weight(1f),
+                )
                 TextButton(onClick = { confirmDelete = true }) { Text("删除", color = Color(0xFFB33C32)) }
             }
             if (moment.moment.text.isNotBlank()) {
@@ -301,12 +469,14 @@ private fun TrackMomentCard(
                 Spacer(Modifier.height(8.dp))
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(moment.attachments.sortedBy { it.createdAt }, key = { it.id }) { attachment ->
+                        val imageFile = attachmentFile(attachment.relativePath)
                         MomentImage(
-                            file = attachmentFile(attachment.relativePath),
+                            file = imageFile,
                             modifier = Modifier
                                 .size(112.dp)
                                 .clip(RoundedCornerShape(12.dp))
                                 .background(Color(0xFFE8EAE6), RoundedCornerShape(12.dp)),
+                            onClick = { imageFile?.let(onImageClick) },
                         )
                     }
                 }

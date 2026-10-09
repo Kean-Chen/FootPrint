@@ -12,6 +12,7 @@ import com.amap.api.location.AMapLocation
 import com.amap.api.location.AMapLocationClient
 import com.amap.api.location.AMapLocationClientOption
 import com.footprint.app.FootprintApplication
+import com.footprint.app.data.TrackFinishResult
 import com.footprint.app.data.TrackStatus
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -88,7 +89,12 @@ class LocationForegroundService : Service() {
 
     private suspend fun finishTrack(trackId: String?) {
         stopLocationUpdates()
-        (activeTrackId ?: trackId)?.let { repository.finishTrack(it) }
+        val result = (activeTrackId ?: trackId)?.let { repository.finishTrack(it) }
+        if (result == TrackFinishResult.EMPTY) {
+            (application as FootprintApplication).setTrackFinishNotice(
+                "没有记录到有效定位点，本次轨迹未保存。请确认定位正常后再开始记录。",
+            )
+        }
         activeTrackId = null
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
@@ -143,6 +149,10 @@ class LocationForegroundService : Service() {
         }
         if (!location.hasAccuracy()) {
             reportLocationIssue("定位结果缺少精度信息，暂未保存轨迹点。请稍后重试。")
+            return
+        }
+        if (!location.accuracy.isFinite() || location.accuracy < 0f) {
+            reportLocationIssue("定位精度无效，暂未保存轨迹点。请稍后重试。")
             return
         }
         if (location.accuracy > MAX_ACCEPTABLE_ACCURACY_METERS) {

@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
@@ -56,6 +57,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -64,6 +66,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -103,6 +106,7 @@ internal fun MapHomeRoot() {
     val application = context.applicationContext as FootprintApplication
     val tracks by application.tracks.observeTracks().collectAsState(initial = emptyList())
     val locationWarning by application.locationWarning.collectAsState()
+    val trackFinishNotice by application.trackFinishNotice.collectAsState()
     val openTrack = tracks.firstOrNull {
         it.status == TrackStatus.RECORDING || it.status == TrackStatus.PAUSED || it.status == TrackStatus.INTERRUPTED
     }
@@ -460,6 +464,19 @@ internal fun MapHomeRoot() {
             }
         }
 
+        if (momentMessage == null && locationWarning == null) {
+            trackFinishNotice?.let { message ->
+                AlertDialog(
+                    onDismissRequest = { application.setTrackFinishNotice(null) },
+                    title = { Text("本次记录未保存") },
+                    text = { Text(message) },
+                    confirmButton = {
+                        TextButton(onClick = { application.setTrackFinishNotice(null) }) { Text("知道了") }
+                    },
+                )
+            }
+        }
+
         permissionMessage?.let { message ->
             AlertDialog(
                 onDismissRequest = { permissionMessage = null },
@@ -476,7 +493,13 @@ internal fun MapHomeRoot() {
                 onDismissRequest = {},
                 title = { Text("发现尚未结束的记录") },
                 text = {
-                    Text("“${track.title}”目前仍未结束。已保存的轨迹点仍在本机。你可以继续记录，或结束并保存这条记录。")
+                    Text(
+                        if (activePoints.isEmpty()) {
+                            "“${track.title}”目前仍未结束，且没有有效轨迹点。可以继续记录；若结束，本次空记录会被删除。"
+                        } else {
+                            "“${track.title}”目前仍未结束。已保存的轨迹点仍在本机。你可以继续记录，或结束并保存这条记录。"
+                        },
+                    )
                 },
                 confirmButton = {
                     TextButton(onClick = {
@@ -488,7 +511,7 @@ internal fun MapHomeRoot() {
                     TextButton(onClick = {
                         startupRecoveryTrackId = null
                         sendAction(context, LocationForegroundService.ACTION_FINISH, track.id)
-                    }) { Text("结束记录") }
+                    }) { Text(if (activePoints.isEmpty()) "结束并删除" else "结束记录") }
                 },
             )
         }
@@ -683,6 +706,9 @@ private fun MapHomeScreen(
     onDelete: () -> Unit,
     onRequestLocation: () -> Unit,
 ) {
+    var recenterRequest by remember { mutableStateOf(0) }
+    var compassResetRequest by remember { mutableStateOf(0) }
+    var mapBearing by remember { mutableStateOf(0f) }
     val lastPoint = points.lastOrNull()
     val liveSpeedMetersPerSecond = lastPoint
         ?.takeIf {
@@ -698,58 +724,26 @@ private fun MapHomeScreen(
             showCurrentLocation = true,
             locationPermissionGranted = locationPermissionGranted,
             showLiveTrackLocation = openTrack?.status == TrackStatus.RECORDING,
-            legendTopPadding = if (openTrack == null) 118.dp else 56.dp,
+            showCompass = false,
+            recenterRequest = recenterRequest,
+            compassResetRequest = compassResetRequest,
+            onCameraBearingChanged = { bearing ->
+                val normalizedBearing = ((bearing % 360f) + 360f) % 360f
+                if (mapBearing.toInt() != normalizedBearing.toInt()) mapBearing = normalizedBearing
+            },
             modifier = Modifier.fillMaxSize(),
         )
 
-        if (openTrack == null) {
-            Surface(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .fillMaxWidth()
-                    .statusBarsPadding()
-                    .padding(horizontal = 16.dp, vertical = 10.dp),
-                shape = RoundedCornerShape(22.dp),
-                color = Color.White.copy(alpha = 0.78f),
-                shadowElevation = 8.dp,
-            ) {
-                Row(
-                    modifier = Modifier.padding(start = 18.dp, end = 10.dp, top = 12.dp, bottom = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text("FootPrint", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                    }
-                    Surface(shape = CircleShape, color = HomePaleGreen.copy(alpha = 0.86f), modifier = Modifier.size(46.dp)) {
-                        IconButton(onClick = onOpenHistory, modifier = Modifier.fillMaxSize()) {
-                            Icon(
-                                painter = painterResource(R.drawable.ic_history),
-                                contentDescription = "打开足迹列表",
-                                tint = HomeGreen,
-                                modifier = Modifier.size(22.dp),
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        if (!locationPermissionGranted) {
-            Surface(
-                modifier = Modifier.align(Alignment.CenterEnd).padding(end = 16.dp),
-                shape = CircleShape,
-                color = Color.White.copy(alpha = 0.96f),
-                shadowElevation = 6.dp,
-            ) {
-                IconButton(onClick = onRequestLocation, modifier = Modifier.size(48.dp)) {
-                    Icon(
-                        painter = painterResource(R.drawable.ic_my_location),
-                        contentDescription = "开启当前位置",
-                        tint = HomeGreen,
-                    )
-                }
-            }
-        }
+        Text(
+            text = "FootPrint",
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .statusBarsPadding()
+                .padding(start = 22.dp, top = 14.dp),
+            color = HomeGreen.copy(alpha = 0.32f),
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
 
         Column(
             modifier = Modifier
@@ -758,6 +752,70 @@ private fun MapHomeScreen(
                 .navigationBarsPadding()
                 .padding(horizontal = 16.dp, vertical = 12.dp),
         ) {
+            Surface(
+                modifier = Modifier.align(Alignment.End).padding(bottom = 8.dp),
+                shape = CircleShape,
+                color = Color.White.copy(alpha = 0.96f),
+                shadowElevation = 6.dp,
+            ) {
+                IconButton(
+                    onClick = { compassResetRequest++ },
+                    modifier = Modifier.size(48.dp),
+                ) {
+                    Box(
+                        modifier = Modifier.size(40.dp).rotate(-mapBearing),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            painter = painterResource(R.drawable.ic_compass),
+                            contentDescription = "指南针，N 指北，S 指南，点击恢复正北",
+                            tint = Color.Unspecified,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                        Text(
+                            "N",
+                            modifier = Modifier.offset(y = (-6).dp),
+                            color = Color.White,
+                            fontSize = 8.sp,
+                            lineHeight = 8.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        Text(
+                            "S",
+                            modifier = Modifier.offset(y = 6.dp),
+                            color = Color.White,
+                            fontSize = 8.sp,
+                            lineHeight = 8.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                }
+            }
+
+            val showLocationAction = !locationPermissionGranted ||
+                openTrack?.status != TrackStatus.RECORDING || points.isEmpty()
+            if (showLocationAction) {
+                Surface(
+                    modifier = Modifier.align(Alignment.End).padding(bottom = 8.dp),
+                    shape = CircleShape,
+                    color = Color.White.copy(alpha = 0.96f),
+                    shadowElevation = 6.dp,
+                ) {
+                    IconButton(
+                        onClick = {
+                            if (locationPermissionGranted) recenterRequest++ else onRequestLocation()
+                        },
+                        modifier = Modifier.size(48.dp),
+                    ) {
+                        Icon(
+                            painter = painterResource(R.drawable.ic_my_location),
+                            contentDescription = if (locationPermissionGranted) "回到当前位置" else "开启当前位置",
+                            tint = HomeGreen,
+                        )
+                    }
+                }
+            }
+
             Surface(
                 shape = RoundedCornerShape(24.dp),
                 color = Color.White.copy(alpha = 0.82f),
@@ -771,6 +829,12 @@ private fun MapHomeScreen(
                         Column(Modifier.weight(1f)) {
                             Text("开始一段漫步", fontWeight = FontWeight.SemiBold)
                         }
+                        RoundIconAction(
+                            icon = R.drawable.ic_history,
+                            label = "足迹",
+                            description = "打开足迹列表",
+                            onClick = onOpenHistory,
+                        )
                         RoundIconAction(
                             icon = R.drawable.ic_record,
                             label = "开始",

@@ -11,11 +11,17 @@ class FootprintApplication : Application() {
     val tracks by lazy { TrackRepository(database, applicationContext) }
     private val mutableLocationWarning = MutableStateFlow<String?>(null)
     val locationWarning = mutableLocationWarning.asStateFlow()
+    private val mutableTrackFinishNotice = MutableStateFlow<String?>(null)
+    val trackFinishNotice = mutableTrackFinishNotice.asStateFlow()
 
     @Volatile
     var hasCheckedUnfinishedTrackAtStartup: Boolean = false
 
     fun setLocationWarning(message: String?) {
         mutableLocationWarning.value = message
+    }
+
+    fun setTrackFinishNotice(message: String?) {
+        mutableTrackFinishNotice.value = message
     }
 }

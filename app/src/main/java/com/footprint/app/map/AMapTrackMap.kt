@@ -3,27 +3,20 @@ package com.footprint.app.map
 import android.os.Bundle
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
@@ -33,6 +26,7 @@ import com.amap.api.maps.AMap
 import com.amap.api.maps.CameraUpdateFactory
 import com.amap.api.maps.MapView
 import com.amap.api.maps.model.BitmapDescriptorFactory
+import com.amap.api.maps.model.CameraPosition
 import com.amap.api.maps.model.LatLng
 import com.amap.api.maps.model.Marker
 import com.amap.api.maps.model.MarkerOptions
@@ -51,7 +45,12 @@ fun AMapTrackMap(
     showCurrentLocation: Boolean = false,
     locationPermissionGranted: Boolean = false,
     showLiveTrackLocation: Boolean = false,
-    legendTopPadding: Dp = 12.dp,
+    showCompass: Boolean = true,
+    markerScale: Float = 1f,
+    recenterRequest: Int = 0,
+    compassResetRequest: Int = 0,
+    onCameraBearingChanged: (Float) -> Unit = {},
+    onMomentPointClick: (Long) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     if (!hasApiKey) {
@@ -66,9 +65,27 @@ fun AMapTrackMap(
 
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val currentOnMomentPointClick by rememberUpdatedState(onMomentPointClick)
+    val currentOnCameraBearingChanged = rememberUpdatedState(onCameraBearingChanged)
     val mapView = remember(context) { MapView(context).apply { onCreate(Bundle()) } }
+    val startMarkerIcon = remember(mapView, markerScale) { TrackMarkerIcons.start(context, markerScale) }
+    val finishMarkerIcon = remember(mapView, markerScale) { TrackMarkerIcons.finish(context, markerScale) }
+    val momentMarkerIcon = remember(mapView, markerScale) { TrackMarkerIcons.moment(context, markerScale) }
     var lastRenderedSignature by remember { mutableStateOf("") }
     var lastLocationEnabled by remember { mutableStateOf<Boolean?>(null) }
+    var lastRecenterRequest by remember(mapView) { mutableStateOf(recenterRequest) }
+    var lastCompassResetRequest by remember(mapView) { mutableStateOf(compassResetRequest) }
+    val cameraChangeListener = remember(mapView) {
+        object : AMap.OnCameraChangeListener {
+            override fun onCameraChange(position: CameraPosition) {
+                currentOnCameraBearingChanged.value(position.bearing)
+            }
+
+            override fun onCameraChangeFinish(position: CameraPosition) {
+                currentOnCameraBearingChanged.value(position.bearing)
+            }
+        }
+    }
     var routePolyline by remember(mapView) { mutableStateOf<Polyline?>(null) }
     var routeDirectionArrow by remember(mapView) { mutableStateOf<NavigateArrow?>(null) }
     var startMarker by remember(mapView) { mutableStateOf<Marker?>(null) }
@@ -93,21 +110,33 @@ fun AMapTrackMap(
         }
     }
 
-    val signature = remember(points, momentPoints, showLiveTrackLocation) {
+    val signature = remember(points, momentPoints, showLiveTrackLocation, markerScale) {
         val latestPointTime = points.lastOrNull()?.recordedAt?.toString() ?: "empty"
         val momentSequenceSignature = momentPoints.joinToString(",") { it.sequence.toString() }
-        "${points.size}:$latestPointTime:$showLiveTrackLocation:$momentSequenceSignature"
+        "${points.size}:$latestPointTime:$showLiveTrackLocation:$markerScale:$momentSequenceSignature"
     }
     Box(modifier = modifier) {
         AndroidView(
             factory = { mapView },
             modifier = Modifier.fillMaxSize(),
             update = { view ->
+                val map = view.map
+                map.setOnCameraChangeListener(cameraChangeListener)
+                currentOnCameraBearingChanged.value(map.cameraPosition.bearing)
+                map.setOnMarkerClickListener { marker ->
+                    val sequence = marker.getObject() as? Long
+                    if (sequence != null) {
+                        currentOnMomentPointClick(sequence)
+                        true
+                    } else {
+                        false
+                    }
+                }
                 if (signature != lastRenderedSignature) {
                     lastRenderedSignature = signature
-                    val map: AMap = view.map
                     map.uiSettings.isZoomControlsEnabled = false
-                    map.uiSettings.isCompassEnabled = true
+                    map.uiSettings.isScrollGesturesEnabled = true
+                    map.uiSettings.isZoomGesturesEnabled = true
                     routePolyline?.remove()
                     routePolyline = null
                     routeDirectionArrow?.remove()
@@ -127,22 +156,23 @@ fun AMapTrackMap(
                             routePolyline = map.addPolyline(
                                 PolylineOptions()
                                     .addAll(coordinates)
-                                    .width(11f)
-                                    .color(android.graphics.Color.rgb(47, 107, 85))
+                                    .width(12f)
+                                    .color(android.graphics.Color.rgb(25, 75, 48))
                                     .zIndex(1f),
                             )
                             routeDirectionArrow = map.addNavigateArrow(
                                 NavigateArrowOptions()
                                     .addAll(coordinates)
                                     .width(13f)
-                                    .topColor(android.graphics.Color.WHITE)
-                                    .sideColor(android.graphics.Color.rgb(47, 107, 85))
+                                    .topColor(android.graphics.Color.rgb(25, 75, 48))
+                                    .sideColor(android.graphics.Color.rgb(13, 48, 30))
                                     .zIndex(2f),
                             )
                             startMarker = map.addMarker(
                                 MarkerOptions()
                                     .position(coordinates.first())
-                                    .icon(BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_GREEN))
+                                    .icon(startMarkerIcon)
+                                    .anchor(0.5f, 0.98f)
                                     .title("起点")
                                     .zIndex(5f),
                             )
@@ -158,7 +188,8 @@ fun AMapTrackMap(
                                 endMarker = map.addMarker(
                                     MarkerOptions()
                                         .position(coordinates.last())
-                                        .icon(BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_RED))
+                                        .icon(finishMarkerIcon)
+                                        .anchor(0.5f, 0.98f)
                                         .title("终点")
                                         .zIndex(6f),
                                 )
@@ -175,7 +206,8 @@ fun AMapTrackMap(
                             startMarker = map.addMarker(
                                 MarkerOptions()
                                     .position(coordinates.first())
-                                    .icon(BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_GREEN))
+                                    .icon(startMarkerIcon)
+                                    .anchor(0.5f, 0.98f)
                                     .title("起点 / 终点")
                                     .zIndex(5f),
                             )
@@ -188,11 +220,12 @@ fun AMapTrackMap(
                             map.addMarker(
                                 MarkerOptions()
                                     .position(LatLng(point.latitude, point.longitude))
-                                    .icon(BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_ORANGE))
+                                    .icon(momentMarkerIcon)
+                                    .anchor(0.5f, 0.98f)
                                     .title(if (momentCount == 1) "图文记录" else "$momentCount 条图文记录")
                                     .snippet("关联轨迹点 #${sequence + 1}")
                                     .zIndex(8f),
-                            )
+                            ).apply { setObject(sequence) }
                         }
 
                         if (showLiveTrackLocation) {
@@ -204,10 +237,11 @@ fun AMapTrackMap(
                 }
                 val enableLocation = showCurrentLocation && locationPermissionGranted &&
                     (!showLiveTrackLocation || points.isEmpty())
+                map.uiSettings.isMyLocationButtonEnabled = false
+                map.uiSettings.isCompassEnabled = showCompass
                 if (lastLocationEnabled != enableLocation) {
                     lastLocationEnabled = enableLocation
                     val map = view.map
-                    map.uiSettings.isMyLocationButtonEnabled = enableLocation
                     if (enableLocation) {
                         map.myLocationStyle = MyLocationStyle()
                             .myLocationType(MyLocationStyle.LOCATION_TYPE_LOCATE)
@@ -216,37 +250,25 @@ fun AMapTrackMap(
                         map.isMyLocationEnabled = false
                     }
                 }
+                if (recenterRequest != lastRecenterRequest) {
+                    lastRecenterRequest = recenterRequest
+                    if (enableLocation) {
+                        map.myLocation?.let { location ->
+                            map.animateCamera(
+                                CameraUpdateFactory.newLatLngZoom(
+                                    LatLng(location.latitude.toDouble(), location.longitude.toDouble()),
+                                    16f,
+                                ),
+                            )
+                        }
+                    }
+                }
+                if (compassResetRequest != lastCompassResetRequest) {
+                    lastCompassResetRequest = compassResetRequest
+                    map.animateCamera(CameraUpdateFactory.changeBearing(0f))
+                }
             },
         )
 
-        if (points.size >= 2 || momentPoints.isNotEmpty()) {
-            Column(
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(start = 12.dp, top = legendTopPadding)
-                    .background(Color.White.copy(alpha = 0.94f), RoundedCornerShape(12.dp))
-                    .padding(horizontal = 12.dp, vertical = 9.dp),
-            ) {
-                Text("箭头表示行进方向", color = Color(0xFF33443B))
-                Spacer(Modifier.size(5.dp))
-                LegendItem(Color(0xFF2F9B68), "起点")
-                LegendItem(
-                    color = if (showLiveTrackLocation) Color(0xFF2694E8) else Color(0xFFD84A43),
-                    label = if (showLiveTrackLocation) "当前位置" else "终点",
-                )
-                if (momentPoints.isNotEmpty()) {
-                    LegendItem(Color(0xFFFFA500), "图文记录位置")
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun LegendItem(color: Color, label: String) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(9.dp).background(color, CircleShape))
-        Spacer(Modifier.width(6.dp))
-        Text(label, color = Color(0xFF33443B))
     }
 }
